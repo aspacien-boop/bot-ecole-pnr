@@ -1,0 +1,466 @@
+/*******************************************************
+ * BOT MESSENGER ECOLE PRIVEE - NODE.JS
+ * -----------------------------------------------------
+ * Ce bot :
+ * - Reçoit les messages Messenger
+ * - Cherche les notes dans Google Sheets
+ * - Répond automatiquement aux parents
+ *
+ * Technologies :
+ * - Node.js
+ * - Express
+ * - Facebook Messenger API
+ * - Google Sheets API
+ *******************************************************/
+
+
+/*******************************************************
+ * IMPORTATION DES MODULES
+ *******************************************************/
+
+// Express = framework serveur Node.js
+const express = require("express");
+
+// axios = permet d'envoyer des requêtes HTTP
+const axios = require("axios");
+
+// googleapis = permet lire Google Sheets
+const { google } = require("googleapis");
+
+// body-parser = lire les données JSON reçues
+const bodyParser = require("body-parser");
+
+// Création de l'application Express
+const app = express();
+
+
+/*******************************************************
+ * CONFIGURATION DU SERVEUR
+ *******************************************************/
+
+// Permet lire le JSON envoyé par Facebook
+app.use(bodyParser.json());
+
+
+/*******************************************************
+ * VARIABLES DE CONFIGURATION
+ *******************************************************/
+
+// IMPORTANT : remplace par ton vrai token Facebook
+const PAGE_ACCESS_TOKEN = "TON_TOKEN_ICI";
+
+// Token de vérification Messenger
+const VERIFY_TOKEN = "ecole_bot_2026";
+
+// Secret application Facebook
+const APP_SECRET = "met_une_phrase_secrete";
+
+// Nom de l'école
+const SCHOOL_NAME = "École Excellence Congo";
+
+
+/*******************************************************
+ * CONFIGURATION GOOGLE SHEETS
+ *******************************************************/
+
+/*
+IMPORTANT :
+
+1. Crée un fichier :
+   credentials.json
+
+2. Mets dedans les clés du compte service Google
+
+3. Ce fichier doit être dans le même dossier
+   que server.js
+*/
+
+// ID DU GOOGLE SHEET
+// Exemple URL :
+// https://docs.google.com/spreadsheets/d/1ABCXYZ123456/edit
+//
+// L'ID = 1ABCXYZ123456
+const SPREADSHEET_ID = "LIEN_GOOGLE_SHEET_ICI";
+
+// Nom de la feuille Google Sheet
+const SHEET_NAME = "Feuille 1";
+
+
+/*******************************************************
+ * CONNEXION A GOOGLE SHEETS
+ *******************************************************/
+
+// Fonction qui récupère les données du Sheet
+async function getSheetData() {
+
+  // Authentification Google
+  const auth = new google.auth.GoogleAuth({
+    keyFile: "credentials.json",
+
+    // Permission lecture Google Sheets
+    scopes: [
+      "https://www.googleapis.com/auth/spreadsheets.readonly",
+    ],
+  });
+
+  // Création client Google Sheets
+  const client = await auth.getClient();
+
+  // Initialisation API Sheets
+  const googleSheets = google.sheets({
+    version: "v4",
+    auth: client,
+  });
+
+  // Lecture des données
+  const response = await googleSheets.spreadsheets.values.get({
+    spreadsheetId: SPREADSHEET_ID,
+
+    // Colonnes A à J
+    range: `${SHEET_NAME}!A:J`,
+  });
+
+  // Retourne les lignes
+  return response.data.values;
+}
+
+
+/*******************************************************
+ * RECHERCHE ETUDIANT PAR MATRICULE
+ *******************************************************/
+
+// Fonction recherche
+async function findStudentByMatricule(matricule) {
+
+  // Récupère toutes les lignes
+  const rows = await getSheetData();
+
+  // Vérifie si le sheet est vide
+  if (!rows || rows.length === 0) {
+    return null;
+  }
+
+  /*
+    FORMAT DES COLONNES :
+
+    A = Matricule
+    B = Nom
+    C = Classe
+    D = Maths
+    E = Français
+    F = Anglais
+    G = Moyenne
+    H = Absences
+    I = Scolarité
+    J = DateRéunion
+  */
+
+  // Parcourt toutes les lignes
+  for (let i = 1; i < rows.length; i++) {
+
+    const row = rows[i];
+
+    // Colonne A = matricule
+    const studentMatricule = row[0];
+
+    // Compare le matricule
+    if (studentMatricule == matricule) {
+
+      // Retourne les infos étudiant
+      return {
+        matricule: row[0] || "",
+        nom: row[1] || "",
+        classe: row[2] || "",
+        maths: row[3] || "",
+        francais: row[4] || "",
+        anglais: row[5] || "",
+        moyenne: row[6] || "",
+        absences: row[7] || "",
+        scolarite: row[8] || "",
+        dateReunion: row[9] || "",
+      };
+    }
+  }
+
+  // Aucun étudiant trouvé
+  return null;
+}
+
+
+/*******************************************************
+ * ENVOI MESSAGE MESSENGER
+ *******************************************************/
+
+// Fonction qui répond au parent
+async function sendMessage(recipientId, messageText) {
+
+  try {
+
+    // Requête vers API Facebook
+    await axios.post(
+      `https://graph.facebook.com/v18.0/me/messages`,
+      {
+        recipient: {
+          id: recipientId,
+        },
+
+        message: {
+          text: messageText,
+        },
+      },
+
+      {
+        params: {
+          access_token: PAGE_ACCESS_TOKEN,
+        },
+      }
+    );
+
+    console.log("Message envoyé avec succès");
+
+  } catch (error) {
+
+    console.log("Erreur envoi message");
+
+    // Affiche détails erreur
+    console.log(error.response?.data || error.message);
+  }
+}
+
+
+/*******************************************************
+ * VERIFICATION WEBHOOK FACEBOOK
+ *******************************************************/
+
+/*
+Facebook appelle cette URL une seule fois
+pour vérifier ton serveur.
+
+Exemple :
+GET /webhook
+*/
+
+app.get("/webhook", (req, res) => {
+
+  // Facebook envoie ces paramètres
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
+
+  // Vérifie le token
+  if (mode && token) {
+
+    // Si token correct
+    if (mode === "subscribe" && token === VERIFY_TOKEN) {
+
+      console.log("Webhook vérifié avec succès");
+
+      // Facebook attend ce challenge
+      res.status(200).send(challenge);
+
+    } else {
+
+      // Mauvais token
+      res.sendStatus(403);
+    }
+  }
+});
+
+
+/*******************************************************
+ * RECEPTION DES MESSAGES MESSENGER
+ *******************************************************/
+
+/*
+Facebook envoie ici tous les messages
+des parents.
+
+POST /webhook
+*/
+
+app.post("/webhook", async (req, res) => {
+
+  // Données envoyées par Facebook
+  const body = req.body;
+
+  // Vérifie que ça vient de Facebook
+  if (body.object === "page") {
+
+    // Parcourt tous les événements
+    for (const entry of body.entry) {
+
+      // Parcourt chaque message
+      for (const event of entry.messaging) {
+
+        // ID utilisateur Facebook
+        const senderId = event.sender.id;
+
+        // Vérifie si message existe
+        if (event.message && event.message.text) {
+
+          // Texte reçu
+          let userMessage = event.message.text.trim();
+
+          // Met en minuscule
+          let lowerMessage = userMessage.toLowerCase();
+
+          console.log("Message reçu :", userMessage);
+
+
+          /*******************************************************
+           * COMMANDE AIDE
+           *******************************************************/
+
+          if (lowerMessage === "aide") {
+
+            await sendMessage(
+              senderId,
+              "Tape ton matricule. Ex: 12345"
+            );
+
+            continue;
+          }
+
+
+          /*******************************************************
+           * EXTRACTION MATRICULE
+           *******************************************************/
+
+          /*
+            Accepte :
+            - 12345
+            - note 12345
+          */
+
+          let matricule = null;
+
+          // Cas : note 12345
+          if (lowerMessage.startsWith("note ")) {
+
+            matricule = lowerMessage.replace("note ", "").trim();
+
+          } else {
+
+            // Cas : juste 12345
+            matricule = lowerMessage;
+          }
+
+
+          /*******************************************************
+           * VERIFIE SI C'EST UN NOMBRE
+           *******************************************************/
+
+          const isNumber = /^[0-9]+$/.test(matricule);
+
+          // Si pas numéro
+          if (!isNumber) {
+
+            await sendMessage(
+              senderId,
+              "Commande inconnue. Tape 'aide' pour voir l'utilisation."
+            );
+
+            continue;
+          }
+
+
+          /*******************************************************
+           * RECHERCHE DANS GOOGLE SHEETS
+           *******************************************************/
+
+          const student = await findStudentByMatricule(matricule);
+
+
+          /*******************************************************
+           * SI MATRICULE INTROUVABLE
+           *******************************************************/
+
+          if (!student) {
+
+            await sendMessage(
+              senderId,
+              "Matricule introuvable. Vérifie ou contacte le secrétariat au 06xxxxxxx"
+            );
+
+            continue;
+          }
+
+
+          /*******************************************************
+           * CREATION MESSAGE REPONSE
+           *******************************************************/
+
+          /*
+            Vérifie statut paiement
+
+            Exemple :
+            - Si colonne contient "Payé"
+            => statut = Payé
+          */
+
+          let statutPaiement = "Impayé";
+
+          if (
+            student.scolarite.toLowerCase().includes("pay")
+          ) {
+            statutPaiement = "Payé";
+          }
+
+          // Construction du message final
+          const responseMessage =
+`📘 Bulletin de ${student.nom} - ${student.classe}
+
+Maths: ${student.maths}/20
+Français: ${student.francais}/20
+Anglais: ${student.anglais}/20
+Moyenne: ${student.moyenne}/20
+Absences: ${student.absences} ce mois
+Scolarité: ${student.scolarite} FCFA - Statut: ${statutPaiement}
+Prochaine réunion: ${student.dateReunion}
+
+École ${SCHOOL_NAME} 🙏`;
+
+
+          /*******************************************************
+           * ENVOI REPONSE AU PARENT
+           *******************************************************/
+
+          await sendMessage(senderId, responseMessage);
+        }
+      }
+    }
+
+    // Facebook attend réponse 200
+    res.status(200).send("EVENT_RECEIVED");
+
+  } else {
+
+    // Mauvais objet
+    res.sendStatus(404);
+  }
+});
+
+
+/*******************************************************
+ * PAGE ACCUEIL TEST
+ *******************************************************/
+
+// Route simple
+app.get("/", (req, res) => {
+
+  res.send("Bot Messenger École fonctionne !");
+});
+
+
+/*******************************************************
+ * DEMARRAGE SERVEUR
+ *******************************************************/
+
+// Render fournit automatiquement PORT
+const PORT = process.env.PORT || 3000;
+
+// Démarre serveur
+app.listen(PORT, () => {
+
+  console.log(`Serveur démarré sur port ${PORT}`);
+});
